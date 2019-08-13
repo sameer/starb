@@ -3,8 +3,6 @@
 // itself, is required to allow creating RingBuffers
 // statically). There may be work-arounds with ptr routines, and it
 // should be investigated.
-//
-// TODO: Needs impls for Iter/IterMut.
 #![no_std]
 #![feature(const_fn)]
 
@@ -84,7 +82,7 @@ pub struct Writer<'a, T> {
 unsafe impl<T> Send for Writer<'_, T> where T: Send {}
 unsafe impl<T> Sync for Writer<'_, T> {}
 
-impl<'a, T> Reader<'a, T>
+impl<T> Reader<'_, T>
 where
     T: Copy,
 {
@@ -122,7 +120,17 @@ where
     }
 }
 
-impl<'a, T> Writer<'a, T>
+impl<T> Iterator for Reader<'_, T>
+where
+    T: Copy,
+{
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.shift()
+    }
+}
+
+impl<T> Writer<'_, T>
 where
     T: Copy,
 {
@@ -221,5 +229,21 @@ mod test {
         // We can drop an element to allow a slot to write to again.
         rbr.shift();
         assert_eq!(rbw.unshift(0xffff), Ok(()));
+    }
+
+    #[test]
+    fn can_iter() {
+        let rb = RingBuffer::<usize>::new(0);
+        let (rbr, mut rbw) = rb.split();
+
+        for i in 0..CAPACITY - 1 {
+            assert_eq!(rbw.unshift(i), Ok(()));
+        }
+
+        let mut i = 0;
+        for e in rbr {
+            assert_eq!(e, i);
+            i += 1;
+        }
     }
 }
