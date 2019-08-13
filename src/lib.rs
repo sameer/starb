@@ -19,8 +19,12 @@ use core::{
 /// This will disappear when const generics appear.
 const CAPACITY: usize = 1024;
 
+/// Errors that can be made when interacting with the ring buffer.
 #[derive(Debug, PartialEq)]
 pub enum Error {
+    /// The buffer is at capacity and cannot fit any more
+    /// elements. You need to `unshift` at least once to make some
+    /// space.
     BufferFull,
 }
 
@@ -40,6 +44,9 @@ where
     T: Copy,
 {
     /// Create a new RingBuffer.
+    ///
+    /// The `default` element isn't important, but is, unfortunately,
+    /// currently required to make stable rust happy.
     pub const fn new(default: T) -> Self {
         Self {
             head: AtomicUsize::new(0),
@@ -48,6 +55,9 @@ where
         }
     }
 
+    /// Splits the ring buffer into a consumer/producer pair
+    /// (`Reader`/`Writer` respectively). These structures can be used
+    /// safely across threads.
     // Honestly, this should consume `self` or at least be `mut`, but
     // it needs to be available in const static contexts, which
     // prevents that. Basically all the rest of the unsafe stuff in
@@ -68,6 +78,7 @@ where
     }
 }
 
+/// Consumer of `RingBuffer`.
 pub struct Reader<'a, T> {
     rb: *const RingBuffer<T>,
     _marker: PhantomData<&'a ()>,
@@ -75,6 +86,7 @@ pub struct Reader<'a, T> {
 unsafe impl<T> Send for Reader<'_, T> where T: Send {}
 unsafe impl<T> Sync for Reader<'_, T> {}
 
+/// Producer for `Ringbuffer`.
 pub struct Writer<'a, T> {
     rb: *const RingBuffer<T>,
     _marker: PhantomData<&'a ()>,
@@ -86,6 +98,12 @@ impl<T> Reader<'_, T>
 where
     T: Copy,
 {
+    /// The number of elements currently available for reading.
+    ///
+    /// NB: Because the `Writer` half of the ring buffer may be adding
+    /// elements in another thread, the value read from `len` is a
+    /// *minimum* of what may actually be available by the time the
+    /// reading takes place.
     pub fn len(&self) -> usize {
         let rb: &mut RingBuffer<T> = unsafe { core::mem::transmute(self.rb) };
         let h = rb.head.load(Ordering::SeqCst);
@@ -94,6 +112,7 @@ where
         rc
     }
 
+    /// Whether or not the ring buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
