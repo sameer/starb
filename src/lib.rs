@@ -112,8 +112,10 @@ where
             None
         } else {
             let nh = (h + 1) % CAPACITY;
-            let buf = unsafe { &mut *rb.buf.get() };
-            let rc = Some(buf[h]);
+            let rc = unsafe {
+                let buf = &mut *rb.buf.get();
+                Some(*buf.get_unchecked(h))
+            };
             rb.head.store(nh, Ordering::SeqCst);
             rc
         }
@@ -144,8 +146,10 @@ where
             // `unshift`. In larger buffers it wastes a buffer slot.
             Err(Error::BufferFull)
         } else {
-            let buf = unsafe { &mut *rb.buf.get() };
-            buf[t] = v;
+            unsafe {
+                let buf = &mut *rb.buf.get();
+                *buf.get_unchecked_mut(t) = v;
+            }
             rb.tail.store(nt, Ordering::SeqCst);
             Ok(())
         }
