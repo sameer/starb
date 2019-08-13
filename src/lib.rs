@@ -8,7 +8,9 @@
 
 use core::{
     cell::UnsafeCell,
+    cmp,
     marker::PhantomData,
+    mem,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -105,7 +107,7 @@ where
     /// *minimum* of what may actually be available by the time the
     /// reading takes place.
     pub fn len(&self) -> usize {
-        let rb: &mut RingBuffer<T> = unsafe { core::mem::transmute(self.rb) };
+        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
         let h = rb.head.load(Ordering::SeqCst);
         let t = rb.tail.load(Ordering::SeqCst);
         let rc = (t + CAPACITY - h) % CAPACITY;
@@ -122,7 +124,7 @@ where
     ///
     /// If nothing is available in the buffer, returns `None`
     pub fn shift(&mut self) -> Option<T> {
-        let rb: &mut RingBuffer<T> = unsafe { core::mem::transmute(self.rb) };
+        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
         let h = rb.head.load(Ordering::SeqCst);
         let t = rb.tail.load(Ordering::SeqCst);
         if h == t {
@@ -136,6 +138,31 @@ where
             rb.head.store(nh, Ordering::SeqCst);
             rc
         }
+    }
+
+    /// Shift all available data into `buf` up to the size of `buf`.
+    ///
+    /// Returns the number of items written into `buf`.
+    pub fn shift_into(&mut self, buf: &mut [T]) -> usize {
+        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
+
+        let mut h = rb.head.load(Ordering::SeqCst);
+        let t = rb.tail.load(Ordering::SeqCst);
+
+        let mylen = (t + CAPACITY - h) % CAPACITY;
+        let buflen = buf.len();
+        let len = cmp::min(mylen, buflen);
+
+        unsafe {
+            let rbuf = &mut *rb.buf.get();
+            for i in 0..len {
+                *buf.get_unchecked_mut(i) = *rbuf.get_unchecked(h);
+                h = (h + 1) % CAPACITY;
+            }
+        }
+
+        rb.head.store(h, Ordering::SeqCst);
+        len
     }
 }
 
@@ -158,7 +185,7 @@ where
     /// Returns `BufferFull` if appending `v` would overlap with the
     /// start of the buffer.
     pub fn unshift(&mut self, v: T) -> Result<(), Error> {
-        let rb: &mut RingBuffer<T> = unsafe { core::mem::transmute(self.rb) };
+        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
         let h = rb.head.load(Ordering::SeqCst);
         let t = rb.tail.load(Ordering::SeqCst);
         let nt = (t + 1) % CAPACITY;
@@ -264,5 +291,42 @@ mod test {
             assert_eq!(e, i);
             i += 1;
         }
+    }
+
+    #[test]
+    fn shift_into_smaller() {
+        let rb = RingBuffer::<usize>::new(0);
+        let (mut rbr, mut rbw) = rb.split();
+        for i in 0..CAPACITY - 1 {
+            assert_eq!(rbw.unshift(i), Ok(()));
+        }
+
+        let mut buf: [usize; CAPACITY / 2] = [0; CAPACITY / 2];
+        assert_eq!(rbr.shift_into(&mut buf), CAPACITY / 2, "return len wrong");
+        for i in 0..CAPACITY / 2 {
+            assert_eq!(buf[i], i, "slot {} wrong", i)
+        }
+
+        assert!(!rbr.shift().is_none());
+    }
+
+    #[test]
+    fn shift_into_bigger() {
+        let rb = RingBuffer::<usize>::new(0);
+        let (mut rbr, mut rbw) = rb.split();
+        for i in 0..CAPACITY - 1 {
+            assert_eq!(rbw.unshift(i), Ok(()));
+        }
+
+        let mut buf: [usize; CAPACITY * 2] = [0; CAPACITY * 2];
+        assert_eq!(rbr.shift_into(&mut buf), CAPACITY - 1, "return len wrong");
+        for i in 0..CAPACITY - 1 {
+            assert_eq!(buf[i], i, "first half")
+        }
+        for i in CAPACITY - 1..CAPACITY * 2 {
+            assert_eq!(buf[i], 0, "second half")
+        }
+
+        assert!(rbr.shift().is_none());
     }
 }
