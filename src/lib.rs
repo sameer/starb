@@ -11,6 +11,7 @@ use core::{
     cmp,
     marker::PhantomData,
     mem::{self, MaybeUninit},
+    ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -41,10 +42,7 @@ pub struct RingBuffer<T> {
     buf: UnsafeCell<MaybeUninit<[T; CAPACITY]>>,
 }
 
-impl<T> RingBuffer<T>
-where
-    T: Copy,
-{
+impl<T> RingBuffer<T> {
     /// Create a new RingBuffer.
     pub const fn new() -> Self {
         Self {
@@ -93,10 +91,7 @@ pub struct Writer<'a, T> {
 unsafe impl<T> Send for Writer<'_, T> where T: Send {}
 unsafe impl<T> Sync for Writer<'_, T> {}
 
-impl<T> Reader<'_, T>
-where
-    T: Copy,
-{
+impl<T> Reader<'_, T> {
     /// The number of elements currently available for reading.
     ///
     /// NB: Because the `Writer` half of the ring buffer may be adding
@@ -165,24 +160,18 @@ where
     #[inline(always)]
     unsafe fn load_val_at(i: usize, buf: &MaybeUninit<[T; CAPACITY]>) -> T {
         let b: &[T; CAPACITY] = &*buf.as_ptr();
-        *b.get_unchecked(i)
+        ptr::read(b.get_unchecked(i))
     }
 }
 
-impl<T> Iterator for Reader<'_, T>
-where
-    T: Copy,
-{
+impl<T> Iterator for Reader<'_, T> {
     type Item = T;
     fn next(&mut self) -> Option<Self::Item> {
         self.shift()
     }
 }
 
-impl<T> Writer<'_, T>
-where
-    T: Copy,
-{
+impl<T> Writer<'_, T> {
     /// Put `v` at the end of the buffer.
     ///
     /// Returns `BufferFull` if appending `v` would overlap with the
@@ -212,6 +201,20 @@ where
         }
     }
 
+    #[inline(always)]
+    unsafe fn store_val_at(i: usize, buf: &mut MaybeUninit<[T; CAPACITY]>, val: T) {
+        let b: &mut [T; CAPACITY] = &mut *buf.as_mut_ptr();
+        ptr::write(b.get_unchecked_mut(i), val);
+    }
+}
+
+// TODO: this needs to be `Copy` because we're pulling data from a
+// slice, and we can't just take stuff out of an index without
+// replacing it, and there's no good value for that.
+impl<T> Writer<'_, T>
+where
+    T: Copy,
+{
     /// Copy as much of `buf` into the ring buffer.
     ///
     /// Returns the number of items copied.
@@ -235,12 +238,6 @@ where
 
         rb.tail.store(t, Ordering::SeqCst);
         len
-    }
-
-    #[inline(always)]
-    unsafe fn store_val_at(i: usize, buf: &mut MaybeUninit<[T; CAPACITY]>, val: T) {
-        let b: &mut [T; CAPACITY] = &mut *buf.as_mut_ptr();
-        *b.get_unchecked_mut(i) = val
     }
 }
 
@@ -389,5 +386,39 @@ mod test {
             assert_eq!(rbr.shift(), Some(0xdead), "wrong value at index {}", i);
         }
         assert!(rbr.shift().is_none());
+    }
+
+    #[test]
+    fn ownership_passes_through() {
+        static mut DROPPED: bool = false;
+        struct DropTest {};
+        impl DropTest {
+            fn i_own_it_now(self) {}
+        }
+        impl Drop for DropTest {
+            fn drop(&mut self) {
+                unsafe { DROPPED = true };
+            }
+        }
+
+        let rb = RingBuffer::<DropTest>::new();
+        let (mut rbr, mut rbw) = rb.split();
+
+        // Create a closure to take ownership of a `DropTest` so we
+        // can make sure it's not dropped when the closure is over.
+        let mut cl = |dt| {
+            rbw.unshift(dt).expect("couldn't store item");
+        };
+        cl(DropTest {});
+        assert_eq!(unsafe { DROPPED }, false);
+
+        // Still, nothing should be dropped, since we now own the
+        // value.
+        let dt = rbr.shift().expect("buffer was empty");
+        assert_eq!(unsafe { DROPPED }, false);
+
+        // And, finally, by giving ownership away, it'll get dropped.
+        dt.i_own_it_now();
+        assert_eq!(unsafe { DROPPED }, true);
     }
 }
