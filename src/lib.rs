@@ -12,7 +12,7 @@ use core::{
     marker::PhantomData,
     mem::{self, MaybeUninit},
     ptr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{self, AtomicUsize, Ordering},
 };
 
 /// Underlying buffer capacity. Needs to be hard-coded for now,
@@ -100,8 +100,10 @@ impl<T> Reader<'_, T> {
     /// reading takes place.
     pub fn len(&self) -> usize {
         let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-        let h = rb.head.load(Ordering::SeqCst);
-        let t = rb.tail.load(Ordering::SeqCst);
+        let h = rb.head.load(Ordering::Relaxed);
+        let t = rb.tail.load(Ordering::Relaxed);
+        atomic::fence(Ordering::Acquire);
+
         let rc = (t + CAPACITY - h) % CAPACITY;
         rc
     }
@@ -117,17 +119,21 @@ impl<T> Reader<'_, T> {
     /// If nothing is available in the buffer, returns `None`
     pub fn shift(&mut self) -> Option<T> {
         let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-        let h = rb.head.load(Ordering::SeqCst);
-        let t = rb.tail.load(Ordering::SeqCst);
+
+        let h = rb.head.load(Ordering::Relaxed);
+        let t = rb.tail.load(Ordering::Relaxed);
+
         if h == t {
             None
         } else {
+            atomic::fence(Ordering::Acquire);
             let nh = (h + 1) % CAPACITY;
             let rc = unsafe {
                 let buf: &MaybeUninit<[T; CAPACITY]> = &*rb.buf.get();
                 Some(Self::load_val_at(h, buf))
             };
-            rb.head.store(nh, Ordering::SeqCst);
+            atomic::fence(Ordering::Release);
+            rb.head.store(nh, Ordering::Relaxed);
             rc
         }
     }
@@ -138,8 +144,9 @@ impl<T> Reader<'_, T> {
     pub fn shift_into(&mut self, buf: &mut [T]) -> usize {
         let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
 
-        let mut h = rb.head.load(Ordering::SeqCst);
-        let t = rb.tail.load(Ordering::SeqCst);
+        let mut h = rb.head.load(Ordering::Relaxed);
+        let t = rb.tail.load(Ordering::Relaxed);
+        atomic::fence(Ordering::Acquire);
 
         let mylen = (t + CAPACITY - h) % CAPACITY;
         let buflen = buf.len();
@@ -153,7 +160,8 @@ impl<T> Reader<'_, T> {
             }
         }
 
-        rb.head.store(h, Ordering::SeqCst);
+        atomic::fence(Ordering::Release);
+        rb.head.store(h, Ordering::Relaxed);
         len
     }
 
@@ -178,8 +186,10 @@ impl<T> Writer<'_, T> {
     /// start of the buffer.
     pub fn unshift(&mut self, v: T) -> Result<(), Error> {
         let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-        let h = rb.head.load(Ordering::SeqCst);
-        let t = rb.tail.load(Ordering::SeqCst);
+
+        let h = rb.head.load(Ordering::Relaxed);
+        let t = rb.tail.load(Ordering::Relaxed);
+
         let nt = (t + 1) % CAPACITY;
         // We can't allow overwrites of the head position, because it
         // would then be possible to write to the same memory location
@@ -192,11 +202,13 @@ impl<T> Writer<'_, T> {
             // `unshift`. In larger buffers it wastes a buffer slot.
             Err(Error::BufferFull)
         } else {
+            atomic::fence(Ordering::Acquire);
             unsafe {
                 let buf = &mut *rb.buf.get();
                 Self::store_val_at(t, buf, v);
             }
-            rb.tail.store(nt, Ordering::SeqCst);
+            atomic::fence(Ordering::Release);
+            rb.tail.store(nt, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -221,8 +233,9 @@ where
     pub fn unshift_from(&mut self, buf: &[T]) -> usize {
         let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
 
-        let h = rb.head.load(Ordering::SeqCst);
-        let mut t = rb.tail.load(Ordering::SeqCst);
+        let h = rb.head.load(Ordering::Relaxed);
+        let mut t = rb.tail.load(Ordering::Relaxed);
+        atomic::fence(Ordering::Acquire);
 
         let mylen = (t + CAPACITY - h) % CAPACITY;
         let buflen = buf.len();
@@ -236,7 +249,8 @@ where
             }
         }
 
-        rb.tail.store(t, Ordering::SeqCst);
+        atomic::fence(Ordering::Release);
+        rb.tail.store(t, Ordering::Relaxed);
         len
     }
 }
