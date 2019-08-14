@@ -10,7 +10,7 @@ use core::{
     cell::UnsafeCell,
     cmp,
     marker::PhantomData,
-    mem,
+    mem::{self, MaybeUninit},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -38,7 +38,7 @@ pub struct RingBuffer<T> {
 
     // Backing store needs to be UnsafeCell to make sure it's not
     // stored in read-only data sections.
-    buf: UnsafeCell<[T; CAPACITY]>,
+    buf: UnsafeCell<MaybeUninit<[T; CAPACITY]>>,
 }
 
 impl<T> RingBuffer<T>
@@ -46,14 +46,11 @@ where
     T: Copy,
 {
     /// Create a new RingBuffer.
-    ///
-    /// The `default` element isn't important, but is, unfortunately,
-    /// currently required to make stable rust happy.
-    pub const fn new(default: T) -> Self {
+    pub const fn new() -> Self {
         Self {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
-            buf: UnsafeCell::new([default; CAPACITY]),
+            buf: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
 
@@ -132,8 +129,8 @@ where
         } else {
             let nh = (h + 1) % CAPACITY;
             let rc = unsafe {
-                let buf = &mut *rb.buf.get();
-                Some(*buf.get_unchecked(h))
+                let buf: &MaybeUninit<[T; CAPACITY]> = &*rb.buf.get();
+                Some(Self::load_val_at(h, buf))
             };
             rb.head.store(nh, Ordering::SeqCst);
             rc
@@ -154,15 +151,21 @@ where
         let len = cmp::min(mylen, buflen);
 
         unsafe {
-            let rbuf = &mut *rb.buf.get();
+            let rbuf: &MaybeUninit<[T; CAPACITY]> = &*rb.buf.get();
             for i in 0..len {
-                *buf.get_unchecked_mut(i) = *rbuf.get_unchecked(h);
+                *buf.get_unchecked_mut(i) = Self::load_val_at(h, rbuf);
                 h = (h + 1) % CAPACITY;
             }
         }
 
         rb.head.store(h, Ordering::SeqCst);
         len
+    }
+
+    #[inline(always)]
+    unsafe fn load_val_at(i: usize, buf: &MaybeUninit<[T; CAPACITY]>) -> T {
+        let b: &[T; CAPACITY] = &*buf.as_ptr();
+        *b.get_unchecked(i)
     }
 }
 
@@ -202,7 +205,7 @@ where
         } else {
             unsafe {
                 let buf = &mut *rb.buf.get();
-                *buf.get_unchecked_mut(t) = v;
+                Self::store_val_at(t, buf, v);
             }
             rb.tail.store(nt, Ordering::SeqCst);
             Ok(())
@@ -225,13 +228,19 @@ where
         unsafe {
             let rbuf = &mut *rb.buf.get();
             for i in 0..len {
-                *rbuf.get_unchecked_mut(t) = *buf.get_unchecked(i);
+                Self::store_val_at(t, rbuf, *buf.get_unchecked(i));
                 t = (t + 1) % CAPACITY;
             }
         }
 
         rb.tail.store(t, Ordering::SeqCst);
         len
+    }
+
+    #[inline(always)]
+    unsafe fn store_val_at(i: usize, buf: &mut MaybeUninit<[T; CAPACITY]>, val: T) {
+        let b: &mut [T; CAPACITY] = &mut *buf.as_mut_ptr();
+        *b.get_unchecked_mut(i) = val
     }
 }
 
@@ -241,7 +250,7 @@ mod test {
 
     #[test]
     fn detects_empty() {
-        let rb = RingBuffer::<bool>::new(false);
+        let rb = RingBuffer::<bool>::new();
         let (mut rbr, mut rbw) = rb.split();
         assert!(rbr.is_empty());
         rbw.unshift(true).ok();
@@ -252,7 +261,7 @@ mod test {
 
     #[test]
     fn len_matches() {
-        let rb = RingBuffer::<bool>::new(false);
+        let rb = RingBuffer::<bool>::new();
         let (mut rbr, mut rbw) = rb.split();
 
         // Count length up.
@@ -273,7 +282,7 @@ mod test {
 
     #[test]
     fn can_wrap() {
-        let rb = RingBuffer::<usize>::new(0);
+        let rb = RingBuffer::<usize>::new();
         let (mut rbr, mut rbw) = rb.split();
 
         // Make sure we can store n-1 elements.
@@ -289,7 +298,7 @@ mod test {
 
     #[test]
     fn cannot_overwrite() {
-        let rb = RingBuffer::<usize>::new(0);
+        let rb = RingBuffer::<usize>::new();
         let (mut rbr, mut rbw) = rb.split();
 
         for i in 0..CAPACITY - 1 {
@@ -304,7 +313,7 @@ mod test {
 
     #[test]
     fn can_iter() {
-        let rb = RingBuffer::<usize>::new(0);
+        let rb = RingBuffer::<usize>::new();
         let (rbr, mut rbw) = rb.split();
 
         for i in 0..CAPACITY - 1 {
@@ -320,7 +329,7 @@ mod test {
 
     #[test]
     fn shift_into_smaller() {
-        let rb = RingBuffer::<usize>::new(0);
+        let rb = RingBuffer::<usize>::new();
         let (mut rbr, mut rbw) = rb.split();
         for i in 0..CAPACITY - 1 {
             assert_eq!(rbw.unshift(i), Ok(()));
@@ -337,7 +346,7 @@ mod test {
 
     #[test]
     fn shift_into_bigger() {
-        let rb = RingBuffer::<usize>::new(0);
+        let rb = RingBuffer::<usize>::new();
         let (mut rbr, mut rbw) = rb.split();
         for i in 0..CAPACITY - 1 {
             assert_eq!(rbw.unshift(i), Ok(()));
@@ -357,7 +366,7 @@ mod test {
 
     #[test]
     fn unshift_from_smaller() {
-        let rb = RingBuffer::<usize>::new(0);
+        let rb = RingBuffer::<usize>::new();
         let (mut rbr, mut rbw) = rb.split();
 
         let buf: [usize; CAPACITY / 2] = [0xdead; CAPACITY / 2];
@@ -370,7 +379,7 @@ mod test {
 
     #[test]
     fn unshift_from_bigger() {
-        let rb = RingBuffer::<usize>::new(0);
+        let rb = RingBuffer::<usize>::new();
         let (mut rbr, mut rbw) = rb.split();
 
         let buf: [usize; CAPACITY * 2] = [0xdead; CAPACITY * 2];
