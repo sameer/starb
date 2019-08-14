@@ -208,6 +208,31 @@ where
             Ok(())
         }
     }
+
+    /// Copy as much of `buf` into the ring buffer.
+    ///
+    /// Returns the number of items copied.
+    pub fn unshift_from(&mut self, buf: &[T]) -> usize {
+        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
+
+        let h = rb.head.load(Ordering::SeqCst);
+        let mut t = rb.tail.load(Ordering::SeqCst);
+
+        let mylen = (t + CAPACITY - h) % CAPACITY;
+        let buflen = buf.len();
+        let len = cmp::min(CAPACITY - mylen - 1, buflen);
+
+        unsafe {
+            let rbuf = &mut *rb.buf.get();
+            for i in 0..len {
+                *rbuf.get_unchecked_mut(t) = *buf.get_unchecked(i);
+                t = (t + 1) % CAPACITY;
+            }
+        }
+
+        rb.tail.store(t, Ordering::SeqCst);
+        len
+    }
 }
 
 #[cfg(test)]
@@ -327,6 +352,33 @@ mod test {
             assert_eq!(buf[i], 0, "second half")
         }
 
+        assert!(rbr.shift().is_none());
+    }
+
+    #[test]
+    fn unshift_from_smaller() {
+        let rb = RingBuffer::<usize>::new(0);
+        let (mut rbr, mut rbw) = rb.split();
+
+        let buf: [usize; CAPACITY / 2] = [0xdead; CAPACITY / 2];
+        assert_eq!(rbw.unshift_from(&buf), CAPACITY / 2);
+        for i in 0..CAPACITY / 2 {
+            assert_eq!(rbr.shift(), Some(0xdead), "wrong value at index {}", i);
+        }
+        assert!(rbr.shift().is_none());
+    }
+
+    #[test]
+    fn unshift_from_bigger() {
+        let rb = RingBuffer::<usize>::new(0);
+        let (mut rbr, mut rbw) = rb.split();
+
+        let buf: [usize; CAPACITY * 2] = [0xdead; CAPACITY * 2];
+        assert_eq!(rbw.unshift_from(&buf), CAPACITY - 1);
+        assert_eq!(rbw.unshift(0xbeef), Err(Error::BufferFull));
+        for i in 0..CAPACITY - 1 {
+            assert_eq!(rbr.shift(), Some(0xdead), "wrong value at index {}", i);
+        }
         assert!(rbr.shift().is_none());
     }
 }
