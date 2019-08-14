@@ -226,7 +226,7 @@ impl<T> Writer<'_, T>
 where
     T: Copy,
 {
-    /// Copy as much of `buf` into the ring buffer.
+    /// Copy as much of `buf` into the ring buffer as possible.
     ///
     /// Returns the number of items copied.
     pub fn unshift_from(&mut self, buf: &[T]) -> usize {
