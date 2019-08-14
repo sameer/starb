@@ -1,10 +1,9 @@
-// FIXME: Currently RingBuffer requires its type parameter to be
-// `Copy` because items are stored in a fixed-length array (which,
-// itself, is required to allow creating RingBuffers
-// statically). There may be work-arounds with ptr routines, and it
-// should be investigated.
+//! An implementation of STAtically allocated Ring Buffers.
+//!
+//! This is a simple ring-buffer structure that lives on the stack,
+//! rather than the heap, so that it can be used in `no-std`
+//! environments, such as embedded.
 #![no_std]
-#![feature(const_fn)]
 
 use core::{
     cell::UnsafeCell,
@@ -20,7 +19,7 @@ use core::{
 /// time so it can be statically allocated or created on the stack.
 ///
 /// This will disappear when const generics appear.
-const CAPACITY: usize = 1024;
+pub const CAPACITY: usize = 1024;
 
 /// Errors that can be made when interacting with the ring buffer.
 #[derive(Debug, PartialEq)]
