@@ -1,0 +1,8 @@
+* Since 0.1
+
+  - API CHANGE: `RingBuffer::new()` no longer takes an argument.
+  - `Copy` trait is no longer required on most `RingBuffer` methods.
+  - Added two methods for bulk copying data in/out of the ring buffer:
+    `Reader::shift_into()` and `Writer::unshift_from()`.
+  - Added 'Iterator` implementation to `Reader`.
+  - Minor performance optimizations.
