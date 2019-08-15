@@ -1,5 +1,10 @@
-* Since 0.1
+* Since 0.2
+  - API CHANGE: The `Reader` and `Writer` types were inadvertently
+    marked `Sync` when they are not. While you may read and write from
+    separate threads safely, it is neither safe to read from two
+    threads or more threads nor write from two or more threads.
 
+* Since 0.1
   - API CHANGE: `RingBuffer::new()` no longer takes an argument.
   - `Copy` trait is no longer required on most `RingBuffer` methods.
   - Added two methods for bulk copying data in/out of the ring buffer:

@@ -73,6 +73,7 @@ impl<T> RingBuffer<T> {
         (rbr, rbw)
     }
 }
+unsafe impl<T> Send for RingBuffer<T> where T: Send {}
 
 /// Consumer of `RingBuffer`.
 pub struct Reader<'a, T> {
@@ -80,7 +81,6 @@ pub struct Reader<'a, T> {
     _marker: PhantomData<&'a ()>,
 }
 unsafe impl<T> Send for Reader<'_, T> where T: Send {}
-unsafe impl<T> Sync for Reader<'_, T> {}
 
 /// Producer for `Ringbuffer`.
 pub struct Writer<'a, T> {
@@ -88,7 +88,6 @@ pub struct Writer<'a, T> {
     _marker: PhantomData<&'a ()>,
 }
 unsafe impl<T> Send for Writer<'_, T> where T: Send {}
-unsafe impl<T> Sync for Writer<'_, T> {}
 
 impl<T> Reader<'_, T> {
     /// The number of elements currently available for reading.
