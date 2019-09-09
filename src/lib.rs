@@ -60,7 +60,7 @@ impl<T> RingBuffer<T> {
     //
     // No, lazy_static is not an option, because it doesn't work on
     // architectures where CAS atomics are missing.
-    pub const fn split<'a>(&'a self) -> (Reader<T>, Writer<T>) {
+    pub const fn split(&self) -> (Reader<T>, Writer<T>) {
         let rbr = Reader { rb: &self };
         let rbw = Writer { rb: &self };
         (rbr, rbw)
@@ -92,8 +92,7 @@ impl<T> Reader<'_, T> {
         let t = self.rb.tail.load(Ordering::Relaxed);
         atomic::fence(Ordering::Acquire);
 
-        let rc = (t + CAPACITY - h) % CAPACITY;
-        rc
+        (t + CAPACITY - h) % CAPACITY
     }
 
     /// Whether or not the ring buffer is empty.
