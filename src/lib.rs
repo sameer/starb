@@ -8,8 +8,7 @@
 use core::{
     cell::UnsafeCell,
     cmp,
-    marker::PhantomData,
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     ptr,
     sync::atomic::{self, AtomicUsize, Ordering},
 };
@@ -62,14 +61,8 @@ impl<T> RingBuffer<T> {
     // No, lazy_static is not an option, because it doesn't work on
     // architectures where CAS atomics are missing.
     pub const fn split<'a>(&'a self) -> (Reader<T>, Writer<T>) {
-        let rbr = Reader {
-            rb: self as *const _,
-            _marker: PhantomData,
-        };
-        let rbw = Writer {
-            rb: self as *const _,
-            _marker: PhantomData,
-        };
+        let rbr = Reader { rb: &self };
+        let rbw = Writer { rb: &self };
         (rbr, rbw)
     }
 }
@@ -77,15 +70,13 @@ unsafe impl<T> Send for RingBuffer<T> where T: Send {}
 
 /// Consumer of `RingBuffer`.
 pub struct Reader<'a, T> {
-    rb: *const RingBuffer<T>,
-    _marker: PhantomData<&'a ()>,
+    rb: &'a RingBuffer<T>,
 }
 unsafe impl<T> Send for Reader<'_, T> where T: Send {}
 
 /// Producer for `Ringbuffer`.
 pub struct Writer<'a, T> {
-    rb: *const RingBuffer<T>,
-    _marker: PhantomData<&'a ()>,
+    rb: &'a RingBuffer<T>,
 }
 unsafe impl<T> Send for Writer<'_, T> where T: Send {}
 
@@ -97,9 +88,8 @@ impl<T> Reader<'_, T> {
     /// *minimum* of what may actually be available by the time the
     /// reading takes place.
     pub fn len(&self) -> usize {
-        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-        let h = rb.head.load(Ordering::Relaxed);
-        let t = rb.tail.load(Ordering::Relaxed);
+        let h = self.rb.head.load(Ordering::Relaxed);
+        let t = self.rb.tail.load(Ordering::Relaxed);
         atomic::fence(Ordering::Acquire);
 
         let rc = (t + CAPACITY - h) % CAPACITY;
@@ -116,10 +106,8 @@ impl<T> Reader<'_, T> {
     ///
     /// If nothing is available in the buffer, returns `None`
     pub fn shift(&mut self) -> Option<T> {
-        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-
-        let h = rb.head.load(Ordering::Relaxed);
-        let t = rb.tail.load(Ordering::Relaxed);
+        let h = self.rb.head.load(Ordering::Relaxed);
+        let t = self.rb.tail.load(Ordering::Relaxed);
 
         if h == t {
             None
@@ -127,11 +115,11 @@ impl<T> Reader<'_, T> {
             atomic::fence(Ordering::Acquire);
             let nh = (h + 1) % CAPACITY;
             let rc = unsafe {
-                let buf: &MaybeUninit<[T; CAPACITY]> = &*rb.buf.get();
+                let buf: &MaybeUninit<[T; CAPACITY]> = &*self.rb.buf.get();
                 Some(Self::load_val_at(h, buf))
             };
             atomic::fence(Ordering::Release);
-            rb.head.store(nh, Ordering::Relaxed);
+            self.rb.head.store(nh, Ordering::Relaxed);
             rc
         }
     }
@@ -140,10 +128,8 @@ impl<T> Reader<'_, T> {
     ///
     /// Returns the number of items written into `buf`.
     pub fn shift_into(&mut self, buf: &mut [T]) -> usize {
-        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-
-        let mut h = rb.head.load(Ordering::Relaxed);
-        let t = rb.tail.load(Ordering::Relaxed);
+        let mut h = self.rb.head.load(Ordering::Relaxed);
+        let t = self.rb.tail.load(Ordering::Relaxed);
         atomic::fence(Ordering::Acquire);
 
         let mylen = (t + CAPACITY - h) % CAPACITY;
@@ -151,7 +137,7 @@ impl<T> Reader<'_, T> {
         let len = cmp::min(mylen, buflen);
 
         unsafe {
-            let rbuf: &MaybeUninit<[T; CAPACITY]> = &*rb.buf.get();
+            let rbuf: &MaybeUninit<[T; CAPACITY]> = &*self.rb.buf.get();
             for i in 0..len {
                 *buf.get_unchecked_mut(i) = Self::load_val_at(h, rbuf);
                 h = (h + 1) % CAPACITY;
@@ -159,7 +145,7 @@ impl<T> Reader<'_, T> {
         }
 
         atomic::fence(Ordering::Release);
-        rb.head.store(h, Ordering::Relaxed);
+        self.rb.head.store(h, Ordering::Relaxed);
         len
     }
 
@@ -183,10 +169,8 @@ impl<T> Writer<'_, T> {
     /// Returns `BufferFull` if appending `v` would overlap with the
     /// start of the buffer.
     pub fn unshift(&mut self, v: T) -> Result<(), Error> {
-        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-
-        let h = rb.head.load(Ordering::Relaxed);
-        let t = rb.tail.load(Ordering::Relaxed);
+        let h = self.rb.head.load(Ordering::Relaxed);
+        let t = self.rb.tail.load(Ordering::Relaxed);
 
         let nt = (t + 1) % CAPACITY;
         // We can't allow overwrites of the head position, because it
@@ -202,11 +186,11 @@ impl<T> Writer<'_, T> {
         } else {
             atomic::fence(Ordering::Acquire);
             unsafe {
-                let buf = &mut *rb.buf.get();
+                let buf = &mut *self.rb.buf.get();
                 Self::store_val_at(t, buf, v);
             }
             atomic::fence(Ordering::Release);
-            rb.tail.store(nt, Ordering::Relaxed);
+            self.rb.tail.store(nt, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -229,10 +213,8 @@ where
     ///
     /// Returns the number of items copied.
     pub fn unshift_from(&mut self, buf: &[T]) -> usize {
-        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
-
-        let h = rb.head.load(Ordering::Relaxed);
-        let mut t = rb.tail.load(Ordering::Relaxed);
+        let h = self.rb.head.load(Ordering::Relaxed);
+        let mut t = self.rb.tail.load(Ordering::Relaxed);
         atomic::fence(Ordering::Acquire);
 
         let mylen = (t + CAPACITY - h) % CAPACITY;
@@ -240,7 +222,7 @@ where
         let len = cmp::min(CAPACITY - mylen - 1, buflen);
 
         unsafe {
-            let rbuf = &mut *rb.buf.get();
+            let rbuf = &mut *self.rb.buf.get();
             for i in 0..len {
                 Self::store_val_at(t, rbuf, *buf.get_unchecked(i));
                 t = (t + 1) % CAPACITY;
@@ -248,7 +230,7 @@ where
         }
 
         atomic::fence(Ordering::Release);
-        rb.tail.store(t, Ordering::Relaxed);
+        self.rb.tail.store(t, Ordering::Relaxed);
         len
     }
 }
