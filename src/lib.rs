@@ -210,6 +210,27 @@ impl<T> Writer<'_, T> {
             Ok(())
         }
     }
+    
+    pub fn full(&self) -> bool {
+        let rb: &mut RingBuffer<T> = unsafe { mem::transmute(self.rb) };
+
+        let h = rb.head.load(Ordering::Relaxed);
+        let t = rb.tail.load(Ordering::Relaxed);
+
+        let nt = (t + 1) % CAPACITY;
+        // We can't allow overwrites of the head position, because it
+        // would then be possible to write to the same memory location
+        // that is being read. If reading a value of `T` takes more
+        // than one memory read, then reading from the head would
+        // produce garbage in this scenario.
+        if nt == h {
+            // FIXME: this comparison is wrong in the trivial
+            // 1-element buffer case which would never allow an
+            // `unshift`. In larger buffers it wastes a buffer slot.
+            return true;
+        }
+        return false;
+    }
 
     #[inline(always)]
     unsafe fn store_val_at(i: usize, buf: &mut MaybeUninit<[T; CAPACITY]>, val: T) {
