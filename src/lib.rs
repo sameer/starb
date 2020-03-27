@@ -19,7 +19,7 @@ use core::{
 /// time so it can be statically allocated or created on the stack.
 ///
 /// This will disappear when const generics appear.
-pub const CAPACITY: usize = 1024;
+pub const CAPACITY: usize = 64;
 
 /// Errors that can be made when interacting with the ring buffer.
 #[derive(Debug, PartialEq)]
